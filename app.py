@@ -1,5 +1,7 @@
 # Main libraries
+from asyncore import read
 import os
+from webbrowser import get
 import pandas as pd
 import numpy as np
 # Libraries for recommendation systems
@@ -12,18 +14,14 @@ from surprise import Reader
 from surprise.model_selection import cross_validate
 from surprise.model_selection import train_test_split
 from flask import jsonify
-from flask import Flask
+from flask import Flask,request
 import json 
 from bson import json_util
 from sklearn.feature_extraction.text import CountVectorizer
 app = Flask(__name__)
 from sklearn.metrics.pairwise import cosine_similarity
+from pandas import DataFrame
 
-def popularity_rec(data):
-    ratings_mean_count = pd.DataFrame(data.groupby('productname')['rate'].mean())
-    ratings_mean_count['rating_counts'] = data.groupby('productname')['rate'].count()
-    ratings_mean_count = ratings_mean_count.sort_values(by=['rate','rating_counts'], ascending=[False,False])
-    return ratings_mean_count.to_json()
 
 # Objective: To get top_n recommendation for each user
 def get_top_n(predictions, n=5):
@@ -40,89 +38,18 @@ def get_top_n(predictions, n=5):
     return top_n
 
 
-# fit and predict using svd
-def svd_func(train, test):
-    svd = SVD(random_state=612)
-    svd.fit(train)
-    svd_pred = svd.test(test)
-    return svd_pred, svd
-
-
 def knn_item(train, test):
     knn_i = KNNWithMeans(k=50, sim_options={'name': 'pearson_baseline', 'user_based': False})
     knn_i.fit(train)
     knn_i_pred = knn_i.test(test)
     return knn_i_pred, knn_i
 
-# fit and predict using knn
-def knn_user(train, test):
-    knn_u = KNNWithMeans(k=50, sim_options={'name': 'pearson_baseline', 'user_based': True})
-    knn_u.fit(train)
-    knn_u_pred = knn_u.test(test)
-    return knn_u_pred, knn_u
-
-def get_database():
-    from pymongo import MongoClient
-    import pymongo
-
-    # Provide the mongodb atlas url to connect python to mongodb using pymongo
-    CONNECTION_STRING = "mongodb+srv://ToanDang:123@mobile.st5aw.mongodb.net/Gotech?retryWrites=true&w=majority"
-
-    # Create a connection using MongoClient. You can import MongoClient or use pymongo.MongoClient
-    from pymongo import MongoClient
-    client = MongoClient(CONNECTION_STRING)
-
-    # Create the database for our example (we will use the same database throughout the tutorial
-    return client['Gotech']
-
-def getdata():
-    dbname = get_database()
-    collection_name = dbname["FeedbackCrawl"]
-    item_details = list(collection_name.find())
-    return json.dumps(item_details, default=json_util.default)
-
-def data():
-    #Loading Data files
-    review_1 = pd.read_csv('feedback1_notnull.csv')
-    review_2 = pd.read_csv('feedback2_notnull.csv')
-    #Merge the data into a single dataframe 
-    reviews = pd.concat([review_1,review_2], ignore_index=True)
-    del review_1, review_2
-
-    unknowns = ['anonymous']
-    reviews['username'].replace(to_replace = unknowns,value = 'Anonymous',inplace=True)
-
-    orgnl_rows = reviews.shape[0]
-    orgnl_columns = reviews.shape[1]
-
-    revs1 = reviews.copy()
-
-    # Delete data which is not useful anymore, to save memory
-    del reviews
-
-    relevant_features=['username','productname','rate']
-    # Step1: remove irrelevant features
-    revs1 = revs1.loc[:,relevant_features]
-
-    # Step2: Round-off score feature to nearest integer
-    revs1['rate'] = revs1['rate'].round(0).astype('Int64')
-
-    # Step3: Impute missing values in score feature with median
-    revs1['rate'] = revs1['rate'].fillna(revs1['rate'].median())
-
-    # Step4: remove samples with missing values in 'Product' and 'author' feature and also 'Anonymous' values
-    revs1.dropna(inplace=True)
-    revs1 = revs1[revs1["username"] != 'Anonymous']
-
-    # Step5: remove duplicates, if any
-    revs1 = revs1.drop_duplicates()
-    return revs1
 
 def popularity_rec(data):
     ratings_mean_count = pd.DataFrame(data.groupby('productname')['rate'].mean())
     ratings_mean_count['rating_counts'] = data.groupby('productname')['rate'].count()
     ratings_mean_count = ratings_mean_count.sort_values(by=['rate','rating_counts'], ascending=[False,False])
-    return ratings_mean_count.head()
+    return ratings_mean_count['rate'].head()
 
 def clean_data(x):
     if isinstance(x, list):
@@ -134,12 +61,12 @@ def clean_data(x):
             return ''
 
 def create_soup(x):
-    return x['Type'] + ' ' + x['CategoryName'] + ' '+ x['ProductName']
+    return x['Type'] + ' ' + ' '+ x['ProductName']
 
 
 # Function that takes in movie title as input and outputs most similar movies
 def get_recommendations(df,title):
-    metadata = df.reset_index()
+    df = df.reset_index()
     count = CountVectorizer(stop_words= None)
     count_matrix = count.fit_transform(df['soup'])
     cosine_sim = cosine_similarity(count_matrix, count_matrix)
@@ -160,13 +87,20 @@ def get_recommendations(df,title):
     movie_indices = [i[0] for i in sim_scores]
 
     # Return the top 10 most similar movies
-    return df['product'].iloc[movie_indices].to_json()
 
-@app.route('/popu')
-def popu():
-    revs = data()
-    df = popularity_rec(revs)
-    return df.to_json()
+    name = df['product'].iloc[movie_indices]
+    name = name.to_dict()
+    dic = {}
+    lst = []
+    for key,value in name.items():
+        lst.append(value)
+    # Return the top 10 most similar movies
+    dic.update({'item': lst})
+    return dic
+    #return df['product'].iloc[movie_indices].to_string()
+
+
+
 
 @app.route('/cb')
 def cb():
@@ -180,13 +114,15 @@ def cb():
         df[feature] = df[feature].apply(clean_data)
 
     df['soup'] = df.apply(create_soup, axis=1)
-    res = get_recommendations(df, 'REDMI 9i Sport (Metallic Blue, 64 GB)')
+    
+    productname = request.args.get('name')
+    res = get_recommendations(df, productname)
     return res
 @app.route('/')
 def index():
     # create contants
     RS=612
-    revs1 = data()
+    revs1 = pd.read_csv('feedback_clean.csv')
 
     # 3. Select data with products having >1000 ratings and users who have given > 50 ratings
     author50 = revs1['username'].value_counts()
@@ -201,22 +137,24 @@ def index():
     revs50_ = Dataset.load_from_df(revs_50[['username','productname','rate']], Reader(rating_scale=(1, 10)))
     trainset, testset = train_test_split(revs50_, test_size=.25,random_state=RS)
 
+
     # svd_pred, svd = svd_func(trainset,testset)
     # svd_rmse = round(accuracy.rmse(svd_pred),2)
 
 
-    # knn_i_pred, knn_i = knn_item(trainset, testset)
-    # knn_i_rmse = round(accuracy.rmse(knn_i_pred),2)
-    
-    knn_u_pred, knn_u = knn_user(trainset, testset)
-   
-    top_5 = get_top_n(knn_u_pred,5)
-    # for key,value in top_5.items():  
-    #     dbname = get_database()
-    #     collection_name = dbname["colap"]
-    #     document = {key: value}
-    #     collection_name.insert_many([document])
-    return jsonify(top_5)
+    knn_i_pred, knn_i = knn_item(trainset, testset)
+
+    top_5 = get_top_n(knn_i_pred,5)
+    dic = {}
+    lst = []
+    print('Top 5 recommendations for all test users are: \n')
+    for key,value in top_5.items():
+        lst.clear()
+        for val in value:
+            lst.append(val[0])
+        dic.update({key:lst})    
+            
+    return dic
 
 if __name__ == "__main__":   
     app.run(debug=True)
